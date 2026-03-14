@@ -1,0 +1,27 @@
+{
+  "name": "acs-agent-huawei-ont",
+  "version": "1.0.0",
+  "description": "Local agent for Huawei EchoLife EG8245W5-6T ONT management",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "install-service": "node scripts/install-service.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0",
+    "dotenv": "^16.4.5",
+    "node-fetch": "^3.3.2"
+  },
+  "keywords": [
+    "tr069",
+    "cwmp",
+    "huawei",
+    "gpon",
+    "ont",
+    "acs"
+  ],
+  "author": "",
+  "license": "MIT"
+}
