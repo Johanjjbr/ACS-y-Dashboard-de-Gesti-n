@@ -21,7 +21,9 @@ class ACSAgent {
     this.reconnectTimeout = null
     this.heartbeatInterval = null
     this.telemetryInterval = null
+    this.pingInterval = null
     this.isConnected = false
+    this.isAlive = false
     
     this.ontClient = new ONTClient({
       ip: process.env.ONT_IP,
@@ -66,7 +68,9 @@ class ACSAgent {
 
   connect() {
     if (this.ws) {
-      this.ws.close()
+      this.ws.removeAllListeners()
+      this.ws.terminate()
+      this.ws = null
     }
 
     logger.info(`Conectando al servidor ACS...`)
@@ -81,8 +85,10 @@ class ACSAgent {
 
       this.ws.on('open', () => this.onOpen())
       this.ws.on('message', (data) => this.onMessage(data))
-      this.ws.on('close', () => this.onClose())
+      this.ws.on('close', (code, reason) => this.onClose(code, reason))
       this.ws.on('error', (error) => this.onError(error))
+      this.ws.on('pong', () => this.onPong())
+      this.ws.on('ping', () => this.onPing())
     } catch (error) {
       logger.error('Error al crear WebSocket:', error.message)
       this.scheduleReconnect()
@@ -92,6 +98,8 @@ class ACSAgent {
   onOpen() {
     logger.success('✓ WebSocket conectado')
     this.isConnected = true
+    this.isAlive = true
+    this.startWsKeepAlive()
 
     // Registrar el agente
     this.send({
@@ -105,13 +113,7 @@ class ACSAgent {
       }
     })
 
-    // Iniciar heartbeat
-    this.startHeartbeat()
-    
-    // Iniciar telemetría
-    this.startTelemetry()
-
-    logger.success('✓ Agente registrado y activo')
+    logger.info('Esperando confirmación de registro...')
     logger.info('')
   }
 
@@ -123,6 +125,9 @@ class ACSAgent {
       switch (message.type) {
         case 'register_ack':
           logger.info('Registro confirmado por el servidor')
+          this.startHeartbeat()
+          this.startTelemetry()
+          logger.success('✓ Agente registrado y activo')
           break
 
         case 'command':
@@ -196,16 +201,31 @@ class ACSAgent {
     }
   }
 
-  onClose() {
-    logger.warn('WebSocket desconectado')
+  onClose(code, reason) {
+    logger.warn(`WebSocket desconectado (code=${code}, reason=${reason || 'N/A'})`)
     this.isConnected = false
+    this.isAlive = false
     this.stopHeartbeat()
     this.stopTelemetry()
+    this.stopWsKeepAlive()
     this.scheduleReconnect()
   }
 
   onError(error) {
     logger.error('WebSocket error:', error.message)
+  }
+
+  onPong() {
+    this.isAlive = true
+    logger.debug('← Pong recibido')
+  }
+
+  onPing() {
+    logger.debug('← Ping recibido')
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.pong()
+      logger.debug('→ Pong enviado')
+    }
   }
 
   scheduleReconnect() {
@@ -217,6 +237,32 @@ class ACSAgent {
     this.reconnectTimeout = setTimeout(() => {
       this.connect()
     }, 5000)
+  }
+
+  startWsKeepAlive() {
+    const interval = parseInt(process.env.WS_PING_INTERVAL) || 15000
+
+    this.stopWsKeepAlive()
+    this.pingInterval = setInterval(() => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return
+
+      if (!this.isAlive) {
+        logger.warn('No se recibió Pong desde el servidor, forzando reconexión')
+        this.ws.terminate()
+        return
+      }
+
+      this.isAlive = false
+      this.ws.ping()
+      logger.debug('→ Ping enviado')
+    }, interval)
+  }
+
+  stopWsKeepAlive() {
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval)
+      this.pingInterval = null
+    }
   }
 
   startHeartbeat() {

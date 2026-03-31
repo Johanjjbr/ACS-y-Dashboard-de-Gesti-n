@@ -30,18 +30,58 @@ app.get("/make-server-4bdedad9/health", (c) => {
 
 // ==================== WEBSOCKET AGENT HANDLER ====================
 
+const WS_HEARTBEAT_INTERVAL = 25000 // ms
+const WS_HEARTBEAT_TIMEOUT = 90000 // ms
+
 app.get(
   '/make-server-4bdedad9/ws',
   upgradeWebSocket((c) => {
     let agentId: string | null = null
+    let lastActivity = Date.now()
+    let heartbeatMonitor: number | null = null
+
+    const resetActivityTimer = () => {
+      lastActivity = Date.now()
+    }
+
+    const startHeartbeatMonitor = (ws: any) => {
+      stopHeartbeatMonitor()
+      heartbeatMonitor = setInterval(() => {
+        const delta = Date.now() - lastActivity
+        if (delta > WS_HEARTBEAT_TIMEOUT) {
+          console.log(`[WS] Timeout de heartbeat para agente ${agentId || 'desconocido'}, cerrando conexión (${delta}ms sin actividad)`)
+          try {
+            ws.close(4000, 'Timeout de heartbeat')
+          } catch (err) {
+            console.error('[WS] Error cerrando ws por timeout:', err)
+          }
+          stopHeartbeatMonitor()
+          return
+        }
+
+        if (ws && ws.readyState === 1) {
+          ws.send(JSON.stringify({ type: 'server_ping', timestamp: new Date().toISOString() }))
+        }
+      }, WS_HEARTBEAT_INTERVAL)
+    }
+
+    const stopHeartbeatMonitor = () => {
+      if (heartbeatMonitor) {
+        clearInterval(heartbeatMonitor)
+        heartbeatMonitor = null
+      }
+    }
 
     return {
       onOpen(_event, ws) {
         console.log('[WS] Nueva conexión entrante')
+        resetActivityTimer()
+        startHeartbeatMonitor(ws)
         ws.send(JSON.stringify({ type: 'connected', message: 'ACS Server ready' }))
       },
 
       async onMessage(event, ws) {
+        resetActivityTimer()
         try {
           const message = JSON.parse(event.data as string)
           console.log(`[WS] Mensaje: ${message.type}`)
@@ -122,6 +162,8 @@ app.get(
       },
 
       onClose(_event, _ws) {
+        stopHeartbeatMonitor()
+
         if (agentId) {
           agentConnections.delete(agentId)
           console.log(`[WS] Agente desconectado: ${agentId}`)
