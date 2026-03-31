@@ -28,163 +28,129 @@ app.get("/make-server-4bdedad9/health", (c) => {
   return c.json({ status: "ok", agents: agentConnections.size });
 });
 
-// ==================== WEBSOCKET AGENT HANDLER ====================
+// ==================== WEBSOCKET AGENT ENDPOINT ====================
 
-const WS_HEARTBEAT_INTERVAL = 25000 // ms
-const WS_HEARTBEAT_TIMEOUT = 90000 // ms
+app.get('/make-server-4bdedad9/ws', async (c) => {
+  const { socket, response } = Deno.upgradeWebSocket(c.req.raw)
 
-app.get(
-  '/make-server-4bdedad9/ws',
-  upgradeWebSocket((c) => {
-    let agentId: string | null = null
-    let lastActivity = Date.now()
-    let heartbeatMonitor: number | null = null
+  let agentSerial: string | null = null
 
-    const resetActivityTimer = () => {
-      lastActivity = Date.now()
-    }
+  socket.onopen = () => {
+    console.log('[WS] Agent connected')
+    socket.send(JSON.stringify({ type: 'connected', message: 'ACS server ready' }))
+  }
 
-    const startHeartbeatMonitor = (ws: any) => {
-      stopHeartbeatMonitor()
-      heartbeatMonitor = setInterval(() => {
-        const delta = Date.now() - lastActivity
-        if (delta > WS_HEARTBEAT_TIMEOUT) {
-          console.log(`[WS] Timeout de heartbeat para agente ${agentId || 'desconocido'}, cerrando conexión (${delta}ms sin actividad)`)
-          try {
-            ws.close(4000, 'Timeout de heartbeat')
-          } catch (err) {
-            console.error('[WS] Error cerrando ws por timeout:', err)
-          }
-          stopHeartbeatMonitor()
-          return
-        }
+  socket.onmessage = async (evt) => {
+    try {
+      const msg = JSON.parse(evt.data as string)
+      console.log(`[WS] type=${msg.type} agent=${msg.agent_id ?? '?'}`)
 
-        if (ws && ws.readyState === 1) {
-          ws.send(JSON.stringify({ type: 'server_ping', timestamp: new Date().toISOString() }))
-        }
-      }, WS_HEARTBEAT_INTERVAL)
-    }
+      switch (msg.type) {
+        case 'register': {
+          agentSerial = msg.serial_number
+          const { serial_number, agent_name } = msg
 
-    const stopHeartbeatMonitor = () => {
-      if (heartbeatMonitor) {
-        clearInterval(heartbeatMonitor)
-        heartbeatMonitor = null
-      }
-    }
+          const existing = await kv.getByPrefix('ont_device:')
+          const match = existing.find((d: any) => d.serial_number === serial_number)
 
-    return {
-      onOpen(_event, ws) {
-        console.log('[WS] Nueva conexión entrante')
-        resetActivityTimer()
-        startHeartbeatMonitor(ws)
-        ws.send(JSON.stringify({ type: 'connected', message: 'ACS Server ready' }))
-      },
-
-      async onMessage(event, ws) {
-        resetActivityTimer()
-        try {
-          const message = JSON.parse(event.data as string)
-          console.log(`[WS] Mensaje: ${message.type}`)
-
-          switch (message.type) {
-            case 'register': {
-              agentId = message.agent_id
-              agentConnections.set(agentId, ws)
-
-              // Buscar dispositivo por serial y marcarlo online
-              const devices = await kv.getByPrefix('ont_device:')
-              const device = devices.find((d: any) => d.serial_number === message.serial_number)
-              if (device) {
-                await kv.set(`ont_device:${device.id}`, {
-                  ...device,
-                  status: 'online',
-                  agent_id: agentId,
-                  last_sync: new Date().toISOString()
-                })
-              }
-
-              ws.send(JSON.stringify({
-                type: 'register_ack',
-                agent_id: agentId,
-                message: 'Registrado correctamente'
-              }))
-              console.log(`[WS] ✓ Agente registrado: ${agentId} (serial: ${message.serial_number})`)
-              break
-            }
-
-            case 'heartbeat': {
-              ws.send(JSON.stringify({ type: 'pong', timestamp: new Date().toISOString() }))
-              break
-            }
-
-            case 'telemetry': {
-              // Guardar telemetría enviada por el agente
-              const devices = await kv.getByPrefix('ont_device:')
-              const device = devices.find((d: any) => d.serial_number === message.serial_number)
-
-              if (device) {
-                const logId = Date.now()
-                await kv.set(`telemetry:${device.id}:${logId}`, {
-                  id: logId,
-                  ont_id: device.id,
-                  rx_power: message.data.rxPower,
-                  tx_power: message.data.txPower,
-                  cpu_load: message.data.cpuLoad,
-                  mem_load: message.data.memLoad,
-                  connected_devices: message.data.connectedDevices,
-                  uptime: message.data.upTime,
-                  created_at: message.timestamp || new Date().toISOString()
-                })
-
-                await kv.set(`ont_device:${device.id}`, {
-                  ...device,
-                  status: 'online',
-                  last_sync: new Date().toISOString()
-                })
-                console.log(`[WS] Telemetría guardada para ${message.serial_number}`)
-              } else {
-                console.log(`[WS] Serial no encontrado en BD: ${message.serial_number}`)
-              }
-              break
-            }
-
-            case 'command_response': {
-              console.log(`[WS] Respuesta cmd ${message.command_id}: success=${message.success}`)
-              break
-            }
-
-            default:
-              console.log(`[WS] Tipo desconocido: ${message.type}`)
-          }
-        } catch (err) {
-          console.log('[WS] Error procesando mensaje:', err)
-        }
-      },
-
-      onClose(_event, _ws) {
-        stopHeartbeatMonitor()
-
-        if (agentId) {
-          agentConnections.delete(agentId)
-          console.log(`[WS] Agente desconectado: ${agentId}`)
-          // Marcar dispositivos de este agente como offline
-          kv.getByPrefix('ont_device:').then((devices: any[]) => {
-            devices.forEach(async (device) => {
-              if (device.agent_id === agentId) {
-                await kv.set(`ont_device:${device.id}`, { ...device, status: 'offline' })
-              }
+          if (match) {
+            await kv.set(`ont_device:${match.id}`, {
+              ...match,
+              status: 'online',
+              alias: match.alias || agent_name,
+              last_sync: new Date().toISOString(),
             })
-          }).catch(console.error)
-        }
-      },
+          } else {
+            const id = crypto.randomUUID()
+            await kv.set(`ont_device:${id}`, {
+              id,
+              serial_number,
+              ip_wan: 'via-agent',
+              alias: agent_name || `ONT-${serial_number.slice(-4)}`,
+              status: 'online',
+              last_sync: new Date().toISOString(),
+              created_at: new Date().toISOString(),
+            })
+          }
 
-      onError(error) {
-        console.log('[WS] Error de conexión:', error)
+          socket.send(JSON.stringify({ type: 'register_ack', agent_id: msg.agent_id }))
+          console.log(`[WS] Registered serial=${serial_number}`)
+          break
+        }
+
+        case 'heartbeat': {
+          if (agentSerial) {
+            const devices = await kv.getByPrefix('ont_device:')
+            const match = devices.find((d: any) => d.serial_number === agentSerial)
+            if (match) {
+              await kv.set(`ont_device:${match.id}`, {
+                ...match,
+                status: 'online',
+                last_sync: new Date().toISOString(),
+              })
+            }
+          }
+          socket.send(JSON.stringify({ type: 'pong' }))
+          break
+        }
+
+        case 'telemetry': {
+          const { serial_number, data } = msg
+          const devices = await kv.getByPrefix('ont_device:')
+          const device = devices.find((d: any) => d.serial_number === serial_number)
+          if (device) {
+            const logId = Date.now()
+            await kv.set(`telemetry:${device.id}:${logId}`, {
+              id: logId,
+              ont_id: device.id,
+              rx_power: data.rxPower,
+              tx_power: data.txPower,
+              cpu_load: data.cpuLoad,
+              mem_load: data.memLoad,
+              connected_devices: data.connectedDevices,
+              uptime: data.upTime,
+              created_at: new Date().toISOString(),
+            })
+            await kv.set(`ont_device:${device.id}`, {
+              ...device,
+              status: 'online',
+              last_sync: new Date().toISOString(),
+            })
+          }
+          break
+        }
+
+        case 'command_response':
+          console.log(`[WS] Command response:`, msg)
+          break
+
+        default:
+          console.log(`[WS] Unknown type: ${msg.type}`)
+      }
+    } catch (err) {
+      console.error('[WS] Error:', err)
+    }
+  }
+
+  socket.onclose = async () => {
+    console.log(`[WS] Agent disconnected: serial=${agentSerial}`)
+    if (agentSerial) {
+      const devices = await kv.getByPrefix('ont_device:')
+      const match = devices.find((d: any) => d.serial_number === agentSerial)
+      if (match) {
+        await kv.set(`ont_device:${match.id}`, {
+          ...match,
+          status: 'offline',
+          last_sync: new Date().toISOString(),
+        })
       }
     }
-  })
-)
+  }
 
+  socket.onerror = (e) => console.error('[WS] Socket error:', e)
+
+  return response
+})
 // ==================== INIT DEMO ====================
 
 app.post("/make-server-4bdedad9/init-demo", async (c) => {
@@ -467,4 +433,131 @@ app.delete("/make-server-4bdedad9/whitelist/:mac", async (c) => {
   }
 })
 
-Deno.serve(app.fetch);
+// Replace: Deno.serve(app.fetch)
+
+Deno.serve((req) => {
+  // Handle WebSocket BEFORE Hono — synchronous handler keeps the connection alive
+  if (req.headers.get('upgrade') === 'websocket') {
+    const { socket, response } = Deno.upgradeWebSocket(req)
+
+    let agentSerial: string | null = null
+
+    socket.onopen = () => {
+      console.log('[WS] Agent connected')
+      socket.send(JSON.stringify({ type: 'connected', message: 'ACS server ready' }))
+    }
+
+    socket.onmessage = async (evt) => {
+      try {
+        const msg = JSON.parse(evt.data as string)
+        console.log(`[WS] type=${msg.type} agent=${msg.agent_id ?? '?'}`)
+
+        switch (msg.type) {
+          case 'register': {
+            agentSerial = msg.serial_number
+            const existing = await kv.getByPrefix('ont_device:')
+            const match = existing.find((d: any) => d.serial_number === agentSerial)
+
+            if (match) {
+              await kv.set(`ont_device:${match.id}`, {
+                ...match,
+                status: 'online',
+                alias: match.alias || msg.agent_name,
+                last_sync: new Date().toISOString(),
+              })
+            } else {
+              const id = crypto.randomUUID()
+              await kv.set(`ont_device:${id}`, {
+                id,
+                serial_number: agentSerial,
+                ip_wan: 'via-agent',
+                alias: msg.agent_name || `ONT-${agentSerial!.slice(-4)}`,
+                status: 'online',
+                last_sync: new Date().toISOString(),
+                created_at: new Date().toISOString(),
+              })
+            }
+
+            socket.send(JSON.stringify({ type: 'register_ack', agent_id: msg.agent_id }))
+            console.log(`[WS] Registered serial=${agentSerial}`)
+            break
+          }
+
+          case 'heartbeat': {
+            if (agentSerial) {
+              const devices = await kv.getByPrefix('ont_device:')
+              const match = devices.find((d: any) => d.serial_number === agentSerial)
+              if (match) {
+                await kv.set(`ont_device:${match.id}`, {
+                  ...match,
+                  status: 'online',
+                  last_sync: new Date().toISOString(),
+                })
+              }
+            }
+            socket.send(JSON.stringify({ type: 'pong' }))
+            break
+          }
+
+          case 'telemetry': {
+            const { serial_number, data } = msg
+            const devices = await kv.getByPrefix('ont_device:')
+            const device = devices.find((d: any) => d.serial_number === serial_number)
+            if (device) {
+              const logId = Date.now()
+              await kv.set(`telemetry:${device.id}:${logId}`, {
+                id: logId,
+                ont_id: device.id,
+                rx_power: data.rxPower,
+                tx_power: data.txPower,
+                cpu_load: data.cpuLoad,
+                mem_load: data.memLoad,
+                connected_devices: data.connectedDevices,
+                uptime: data.upTime,
+                created_at: new Date().toISOString(),
+              })
+              await kv.set(`ont_device:${device.id}`, {
+                ...device,
+                status: 'online',
+                last_sync: new Date().toISOString(),
+              })
+            }
+            break
+          }
+
+          case 'command_response':
+            console.log(`[WS] Command response:`, msg)
+            break
+
+          default:
+            console.log(`[WS] Unknown type: ${msg.type}`)
+        }
+      } catch (err) {
+        console.error('[WS] Error:', err)
+      }
+    }
+
+    socket.onclose = async () => {
+      console.log(`[WS] Disconnected: serial=${agentSerial}`)
+      if (agentSerial) {
+        const devices = await kv.getByPrefix('ont_device:')
+        const match = devices.find((d: any) => d.serial_number === agentSerial)
+        if (match) {
+          await kv.set(`ont_device:${match.id}`, {
+            ...match,
+            status: 'offline',
+            last_sync: new Date().toISOString(),
+          })
+        }
+      }
+    }
+
+    socket.onerror = (e) => console.error('[WS] Error:', e)
+
+    // Return synchronously — this is the critical difference
+    return response
+  }
+
+  // All non-WebSocket requests go through Hono as normal
+  return app.fetch(req)
+})
