@@ -3,3 +3,4 @@ agent/.env
 node_modules/
 dist/
 *.deno
+agent\node_modules
