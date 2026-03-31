@@ -20,11 +20,10 @@ export class ONTClient {
    */
   async testConnection() {
     try {
-      const response = await fetch(`https://${this.config.ip}/`, {
-        method: 'GET',
-        agent: this.httpsAgent,
-        timeout: 5000
-      })
+const response = await fetch(`http://${this.config.ip}/`, {
+  method: 'GET',
+  timeout: 5000
+})
       return response.ok || response.status === 401 // 401 es OK, solo significa que necesita auth
     } catch (error) {
       return false

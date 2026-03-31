@@ -1,0 +1,31 @@
+{
+  "project_id": "faaqjsizafrszffotike",
+  "api": {
+    "port": 54321,
+    "schemas": ["public", "graphql_public"],
+    "max_rows": 20000
+  },
+  "db": {
+    "port": 54322
+  },
+  "realtime": {
+    "enabled": true,
+    "max_bytes_per_second": 1000000,
+    "max_channels_per_client": 128,
+    "max_joins_per_second": 500
+  },
+  "studio": {
+    "port": 54323
+  },
+  "inbucket": {
+    "enabled": true,
+    "port": 54324,
+    "smtp": {
+      "enabled": true,
+      "port": 1025
+    }
+  },
+  "vector": {
+    "enabled": false
+  }
+}

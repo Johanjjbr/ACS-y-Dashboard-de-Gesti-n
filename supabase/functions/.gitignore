@@ -1,0 +1,5 @@
+# Supabase functions build output
+node_modules/
+dist/
+*.deno
+.DS_Store
